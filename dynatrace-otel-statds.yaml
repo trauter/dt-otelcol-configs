@@ -1,0 +1,131 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: dynatrace-otel-collector-statsd
+spec:
+  clusterIP: None
+  selector:
+    app: dynatrace-otel-collector-statsd
+  ports:
+    - protocol: UDP
+      port: 8125
+      targetPort: 8125
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dynatrace-otel-collector-statsd
+  labels:
+    app: dynatrace-otel-collector-statsd
+    component: dynatrace-otel-collector-statsd
+spec:
+  selector:
+    matchLabels:
+      app: dynatrace-otel-collector-statsd
+      component: dynatrace-otel-collector-statsd
+  minReadySeconds: 5
+  progressDeadlineSeconds: 120
+  replicas: 1 #TODO - adjust this to your own requirements
+  template:
+    metadata:
+      labels:
+        app: dynatrace-otel-collector-statsd
+        component: dynatrace-otel-collector-statsd
+    spec:
+      containers:
+        - args: ["--config", "/conf/otel-collector-config.yaml"]
+          env:
+            - name: GOGC
+              value: "80"
+            - name: DT_API_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: dynatrace-otel-collector-dt-api-credentials
+                  key: api-endpoint              
+            - name: DT_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: dynatrace-otel-collector-dt-api-credentials
+                  key: api-token                       
+          image: otel/opentelemetry-collector-contrib:0.46.0
+          name: otel-collector
+          resources:
+            limits:
+              cpu: 1
+              memory: 1Gi
+            requests:
+              cpu: 200m
+              memory: 400Mi
+          ports:
+            - containerPort: 8889 # Default endpoint for querying metrics.
+            - containerPort: 8125
+              protocol: UDP            
+          volumeMounts:
+            - name: dynatrace-otel-collector-statsd-config-volume
+              mountPath: /conf
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 13133 # Health Check extension default port.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133 # Health Check extension default port.
+      volumes:
+        - configMap:
+            name: dynatrace-otel-collector-statsd-config
+            items:
+              - key: otel-collector-config
+                path: otel-collector-config.yaml
+          name: dynatrace-otel-collector-statsd-config-volume
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dynatrace-otel-collector-statsd-config
+  labels:
+    app: opentelemetry
+    component: otel-collector-conf
+data:
+  otel-collector-config: |
+      exporters: 
+        logging:
+        prometheus: 
+          endpoint: "0.0.0.0:8889"
+        dynatrace:
+          # optional - tags specified here will be included as a dimension on every exported metric
+
+          # optional - prefix will be prepended to each metric name in prefix.name format
+          prefix: trauter_otel_statsd_
+
+          endpoint: "${DT_API_ENDPOINT}/api/v2/metrics/ingest"
+          # Token must at least have the Ingest metrics (metrics.ingest) permission
+          api_token: "${DT_API_TOKEN}"
+      extensions: 
+        health_check: {}
+      receivers: 
+        statsd:
+          endpoint: 0.0.0.0:8125 #default
+          aggregation_interval: 60s #default
+          enable_metric_type: false #default
+          timer_histogram_mapping: #default
+            - statsd_type: "histogram" #default
+              observer_type: "gauge" #default
+            - statsd_type: "timer" #default
+              observer_type: "gauge" #default        
+      service: 
+        telemetry:
+          logs:
+            level: "debug"
+        extensions: 
+          - health_check
+        pipelines: 
+          metrics: 
+            exporters: 
+              - dynatrace
+              - prometheus
+              - logging
+            processors: []
+            receivers: 
+              - statsd
