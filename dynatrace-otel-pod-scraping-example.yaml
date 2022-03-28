@@ -1,3 +1,15 @@
+# This file contains:
+# An otel-collector 'dynatrace-otelcol-config' configuration that 
+#  - scrapes all pods with 
+#    - name "slow-webserver.*"
+#    - metrics.dynatrace.com/scrape=True annotation
+#    - container port 8445 exposed
+#  - adds dt_kubernetes_cluster_id (to enable context creation on Dynatrace)
+#  - adds other k8s specific labels
+#  - translates labels from Prometheus naming schema to Dynatrace (e.g. "." vs "_")
+#  - exports all metrics via Prometheus and Dynatrace (you have to provide your Dynatrace endpoint and API Token in a secret called dynatrace-otelcol-dt-api-credentials)
+# A deployment with the official opentelemetry collector (-contrib)
+# A service account + clusterrole that enables the collector to access k8s API to gather endpoints and pod info 
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -67,12 +79,11 @@ data:
             scrape_configs:
               - job_name: scrape_endpoints_with_token # TODO: Set job name
                 metrics_path: /metrics
-                scrape_interval: 10s
 
                 scheme: http # TODO: Set scheme
 
                 authorization:
-                  credentials: myberartoken # TODO: credentials. default is "bearer" authentication
+                  credentials: mybearertoken # TODO: credentials. default is "bearer" authentication
 
                 kubernetes_sd_configs:
                   - role: pod
@@ -92,7 +103,7 @@ data:
                   - source_labels: [__meta_kubernetes_pod_name]
                     action: keep
                     regex: "slow-webserver.*"
-                # Scrape config: Per defualt, all containerPorts are scraped, we only want to scrape 8445
+                # Scrape config: Per default, all containerPorts are scraped; we only want to scrape 8445
                   - source_labels: [__meta_kubernetes_pod_container_port_number]
                     action: keep
                     regex: 8445
