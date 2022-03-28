@@ -1,0 +1,177 @@
+# This file contains:
+# A deployment with the official opentelemetry collector (-contrib)
+#  - this deployment is annotated so dynatrace can scrape the exported promethes metrics
+# An otel-collector configuration that 
+#  - scrapes kubelet (except volume_stats) and cadvisor metrics
+#  - exports them via prometheus (so dynatrace can read them)
+# A service account that has read access to nodes and nodes/metrics 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: dynatrace
+  name: dynatrace-otel-collector
+  labels:
+    app: opentelemetry
+    component: dynatrace-otel-collector
+spec:
+  selector:
+    matchLabels:
+      app: opentelemetry
+      component: dynatrace-otel-collector
+  minReadySeconds: 5
+  progressDeadlineSeconds: 120
+  replicas: 1 
+  template:
+    metadata:
+      annotations:
+        metrics.dynatrace.com/path: /metrics
+        metrics.dynatrace.com/port: "8080"
+        metrics.dynatrace.com/scrape: "true"
+      labels:
+        app: opentelemetry
+        component: dynatrace-otel-collector
+    spec:
+      serviceAccountName: dynatrace-otel-collector-service-account
+      containers:
+        - args: ["--config", "/conf/otel-collector-config.yaml"]
+          env:
+            - name: GOGC
+              value: "80"                      
+          image: otel/opentelemetry-collector-contrib:0.46.0
+          name: otel-collector
+          resources:
+            limits:
+              cpu: 200m
+              memory: 600Mi
+            requests:
+              cpu: 200m
+              memory: 600Mi
+          ports:
+            - containerPort: 8080 # Default endpoint for querying metrics.
+          volumeMounts:
+            - name: dynatrace-otel-collector-config-volume
+              mountPath: /conf
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 13133 # Health Check extension default port.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133 # Health Check extension default port.
+      volumes:
+        - configMap:
+            name: dynatrace-otel-collector-config
+            items:
+              - key: otel-collector-config
+                path: otel-collector-config.yaml
+          name: dynatrace-otel-collector-config-volume
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: dynatrace
+  name: dynatrace-otel-collector-config
+  labels:
+    app: opentelemetry
+    component: otel-collector-conf
+data:
+  otel-collector-config: |
+      exporters: 
+        logging:
+        prometheus: 
+          endpoint: "0.0.0.0:8080"
+      extensions: 
+        health_check: {}
+      receivers: 
+        prometheus: 
+          config:
+            scrape_configs:        
+              - job_name: kubernetes_nodes_kubelet
+                metrics_path: /metrics
+                scheme: https
+                authorization:
+                  credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+                tls_config: 
+                  ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt     
+                  # FIXME: if the service-account ca (see line above) provides the actual root certificate for kueblet endpoints (e.g. GKE), you should disable this
+                  insecure_skip_verify: true 
+                kubernetes_sd_configs: 
+                  - role: node
+                    api_server: https://kubernetes.default:443
+                    authorization:
+                      credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+                    tls_config: 
+                      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+                metric_relabel_configs:
+                  - source_labels: [ __name__ ]
+                    regex: "^kubelet_volume_stats_.*"
+                    action: drop                
+              - job_name: kubernetes_nodes_cadvisor
+                metrics_path: /metrics/cadvisor
+                scheme: https
+                authorization:
+                  credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+                tls_config: 
+                  ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt    
+                  # FIXME: if the service-account ca (see line above) provides the actual root certificate for kueblet endpoints (e.g. GKE), you should disable this         
+                  insecure_skip_verify: true     
+                kubernetes_sd_configs: 
+                  - role: node
+                    api_server: https://kubernetes.default:443
+                    authorization:
+                      credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+                    tls_config: 
+                      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt                      
+      service: 
+        telemetry:
+          logs:
+            level: "info"
+        extensions: 
+          - health_check
+        pipelines: 
+          metrics: 
+            exporters: 
+              - prometheus
+              - logging
+            processors: []
+            receivers: 
+              - prometheus
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  namespace: dynatrace
+  name: dynatrace-otel-collector-service-account
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dynatrace-otel-collector-prometheus
+rules:
+  - apiGroups: [""]
+    resources: 
+      - nodes
+      - nodes/metrics
+    verbs: 
+      - list
+      - watch
+      - get  
+  - nonResourceURLs:
+      - "/metrics"
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+# This cluster role binding allows anyone in the "manager" group to read secrets in any namespace.
+kind: ClusterRoleBinding
+metadata:
+  name: dynatrace-otel-collector-prometheus-access
+subjects:
+- kind: ServiceAccount
+  name: dynatrace-otel-collector-service-account
+  namespace: dynatrace
+roleRef:
+  kind: ClusterRole
+  name: dynatrace-otel-collector-prometheus
+  apiGroup: rbac.authorization.k8s.io
