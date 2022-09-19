@@ -1,19 +1,16 @@
 # This file contains:
-# An otel-collector 'dynatrace-otelcol-config' configuration that 
-#  - scrapes all pods with 
-#    - name "slow-webserver.*"
-#    - metrics.dynatrace.com/scrape=True annotation
-#    - container port 8445 exposed
+# An otel-collector 'dynatrace-otelcol-kube' configuration that 
+#  - scrapes all metrics from kube-state-metrics.kube-system
 #  - adds dt_kubernetes_cluster_id (to enable context creation on Dynatrace)
 #  - adds other k8s specific labels
 #  - translates labels from Prometheus naming schema to Dynatrace (e.g. "." vs "_")
-#  - exports all metrics via Prometheus and Dynatrace (you have to provide your Dynatrace endpoint and API Token in a secret called dynatrace-otelcol-dt-api-credentials)
+#  - exports all metrics via Prometheus and Dynatrace (you have to provide your Dynatrace endpoint and API Token in a secret called dynatrace-otelcol-kube-state-dt-api-credentials)
 # A deployment with the official opentelemetry collector (-contrib)
 # A service account + clusterrole that enables the collector to access k8s API to gather endpoints and pod info 
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: dynatrace-otelcol-config
+  name: dynatrace-otelcol-kube-state-config
 data:
   otel-collector-config: |
       processors:
@@ -25,9 +22,14 @@ data:
               match_type: regexp
               action: update
               operations:
+              # add k8s cluster id
+                - action: add_label
+                  new_label: dt.kubernetes.cluster.id
+                  new_value: ${DT_KUBERNETES_CLUSTER_ID}         
+              # generic translations between prometheus ("_") and dt (".") world
                 - action: update_label
-                  label: k8s_container_name
-                  new_label: k8s.container.name
+                  label: k8s_deployment_name
+                  new_label: k8s.deployment.name
                 - action: update_label
                   label: dt_kubernetes_cluster_id
                   new_label: dt.kubernetes.cluster.id
@@ -38,8 +40,8 @@ data:
                   label: k8s_pod_uid
                   new_label: k8s.pod.uid
                 - action: update_label
-                  label: dt_kubernetes_cluster_id
-                  new_label: dt.kubernetes.cluster_id
+                  label: k8s_workload_kind
+                  new_label: k8s.workload.kind                  
                 - action: update_label
                   label: dt_kubernetes_workload_kind
                   new_label: dt.kubernetes.workload.kind
@@ -72,69 +74,41 @@ data:
       receivers:
         prometheus:
           config:
-            global:
-              external_labels:
-              # TODO: Set UID of kube-system namespace here!
-                dt_kubernetes_cluster_id: cc84ba97-8579-4b02-8943-93e09bd446d9
             scrape_configs:
-              - job_name: scrape_endpoints_with_token # TODO: Set job name
-                metrics_path: /metrics
-
-                scheme: http # TODO: Set scheme
-
-                authorization:
-                  credentials: mybearertoken # TODO: credentials. default is "bearer" authentication
-
-                kubernetes_sd_configs:
-                  - role: pod
-                    api_server: https://kubernetes.default:443
-                    authorization:
-                      credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
-                    tls_config:
-                      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-                relabel_configs:
-      # part 1: Configure what to scrape
-                # Scrape config: scrape only pods with metrics.dynatrace.com/scrape=True
-                  - source_labels: [__meta_kubernetes_pod_annotation_metrics_dynatrace_com_scrape]
-                    action: keep
-                    regex: true
-                # TODO: Set pod names and ports to scrape
-                # Scrape config: select only pods with the given name
-                  - source_labels: [__meta_kubernetes_pod_name]
-                    action: keep
-                    regex: "slow-webserver.*"
-                # Scrape config: Per default, all containerPorts are scraped; we only want to scrape 8445
-                  - source_labels: [__meta_kubernetes_pod_container_port_number]
-                    action: keep
-                    regex: 8445
-      # part 2: Configure enrichment
-                  - source_labels: [__meta_kubernetes_pod_container_name]
+              - job_name: 'kube-state-metrics'
+                static_configs:
+                  - targets: ['kube-state-metrics.kube-system.svc.cluster.local:8080']
+                metric_relabel_configs:
+                  - source_labels: [deployment]
                     action: replace
-                    target_label: "k8s_container_name"
-                  - source_labels: [__meta_kubernetes_pod_name]
+                    regex: "(.+)"
+                    target_label: "k8s_workload_kind"
+                    replacement: "deployment"
+                  - source_labels: [deployment]
                     action: replace
-                    target_label: "k8s_pod_name"
-                  - source_labels: [__meta_kubernetes_pod_uid]
+                    regex: "(.+)"
+                    target_label: "k8s_deployment_name"
+                    replacement: "$$1"     
+                  - source_labels: [namespace]
                     action: replace
-                    target_label: "k8s_pod_uid"
-                  - source_labels: [ __meta_kubernetes_pod_controller_kind]
-                    action: replace
-                    target_label: "dt_kubernetes_workload_kind"
-                  - source_labels: [ __meta_kubernetes_pod_controller_name]
-                    action: replace
-                    target_label: "dt_kubernetes_workload_name"
-                  - source_labels: [__meta_kubernetes_pod_node_name]
-                    action: replace
-                    target_label: "k8s_node_name"
-                  - source_labels: [__meta_kubernetes_namespace]
-                    action: replace
+                    regex: "(.+)"
                     target_label: "k8s_namespace_name"
-                  - source_labels: [__meta_kubernetes_pod_label_name]
+                    replacement: "$$1"    
+                  - source_labels: [node]
                     action: replace
-                    target_label: "k8s_label_name"
-                  - source_labels: [__meta_kubernetes_pod_label_app]
+                    regex: "(.+)"
+                    target_label: "k8s_node_name"
+                    replacement: "$$1"
+                  - source_labels: [namespace, hpa]
                     action: replace
-                    target_label: "k8s_label_app"
+                    regex: "istio-system;(istio-telemetry.*)"
+                    target_label: "k8s_deployment_name"
+                    replacement: "$$1"  
+                  - source_labels: [namespace, hpa]
+                    action: replace
+                    regex: "istio-system;(istio-telemetry.*)"
+                    target_label: "k8s_workload_kind"
+                    replacement: "deployment"                      
       service:
         telemetry:
           logs:
@@ -154,25 +128,30 @@ data:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: dynatrace-otelcol
+  name: dynatrace-otelcol-kube-state
 spec:
   selector:
     matchLabels:
-      app: dynatrace-otelcol
+      app: dynatrace-otelcol-kube-state
   minReadySeconds: 5
   progressDeadlineSeconds: 120
   replicas: 1
   template:
     metadata:
       labels:
-        app: dynatrace-otelcol
+        app: dynatrace-otelcol-kube-state
     spec:
-      serviceAccountName: dynatrace-otelcol
+      serviceAccountName: dynatrace-otelcol-kube-state
       containers:
         - args: ["--config", "/conf/otel-collector-config.yaml"]
           env:
             - name: GOGC
               value: "80"
+            - name: DT_KUBERNETES_CLUSTER_ID
+              valueFrom:
+                secretKeyRef:
+                  name: dynatrace-otelcol-dt-api-credentials
+                  key: DT_KUBERNETES_CLUSTER_ID            
             - name: DT_API_ENDPOINT
               valueFrom:
                 secretKeyRef:
@@ -195,7 +174,7 @@ spec:
           ports:
             - containerPort: 8889 # Default endpoint for querying metrics of prometheus exporter.
           volumeMounts:
-            - name: dynatrace-otelcol-config
+            - name: dynatrace-otelcol-kube-state-config
               mountPath: /conf
           livenessProbe:
             httpGet:
@@ -207,22 +186,22 @@ spec:
               port: 13133 # Health Check extension default port.
       volumes:
         - configMap:
-            name: dynatrace-otelcol-config
+            name: dynatrace-otelcol-kube-state-config
             items:
               - key: otel-collector-config
                 path: otel-collector-config.yaml
-          name: dynatrace-otelcol-config
+          name: dynatrace-otelcol-kube-state-config
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   namespace: dynatrace
-  name: dynatrace-otelcol
+  name: dynatrace-otelcol-kube-state
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: dynatrace-otelcol
+  name: dynatrace-otelcol-kube-state
 rules:
   - apiGroups: [""]
     resources: ["nodes", "services", "pods"]
@@ -232,12 +211,12 @@ apiVersion: rbac.authorization.k8s.io/v1
 # This cluster role binding allows anyone in the "manager" group to read secrets in any namespace.
 kind: ClusterRoleBinding
 metadata:
-  name: dynatrace-otelcol
+  name: dynatrace-otelcol-kube-state
 subjects:
 - kind: ServiceAccount
-  name: dynatrace-otelcol
+  name: dynatrace-otelcol-kube-state
   namespace: dynatrace
 roleRef:
   kind: ClusterRole
-  name: dynatrace-otelcol
+  name: dynatrace-otelcol-kube-state
   apiGroup: rbac.authorization.k8s.io

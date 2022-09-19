@@ -42,12 +42,12 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: dynatrace-otel-collector-dt-api-credentials
-                  key: api-endpoint              
+                  key: DT_API_ENDPOINT              
             - name: DT_API_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: dynatrace-otel-collector-dt-api-credentials
-                  key: api-token                       
+                  key: DT_API_TOKEN                      
           image: otel/opentelemetry-collector-contrib:0.46.0
           name: otel-collector
           resources:

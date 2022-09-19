@@ -7,6 +7,8 @@ dynatrace-otel-kubelet: Scrapes kubelet and cadvisor metrics and exports them to
 
 ## Create Secrets
 ```
-kubectl -n dynatrace create secret generic dynatrace-otelcol-dt-api-credentials --from-literal=api-endpoint=https://xy.dynatrace.com --from-literal=api-token=dt0c01...TOKEN_WITH_METRIC_INGEST
+kubectl -n dynatrace create secret generic dynatrace-otelcol-dt-api-credentials \
+  --from-literal=DT_API_ENDPOINT=https://xy.dynatrace.com \
+  --from-literal=DT_API_TOKENdt0c01...TOKEN_WITH_METRIC_INGEST \
+  --from-literal=DT_KUBERNETES_CLUSTER_ID=$(kubectl get ns/kube-system -o jsonpath='{.metadata.uid}')
 ```
-
